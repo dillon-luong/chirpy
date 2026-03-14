@@ -1,0 +1,23 @@
+# Binaries
+/bin/
+/dist/
+
+# Go build cache
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+chirpy
+
+# Test binary
+*.test
+
+# Coverage output
+*.out
+
+# Shell scripts
+*.sh
+
+# Env vars
+.env
