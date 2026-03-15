@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/dillon-luong/chirpy/internal/database"
+	"github.com/dillon-luong/chirpy/internal/auth"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
@@ -23,6 +24,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db *database.Queries
 	platform string
+	jwtSecret string
 }
 
 type User struct {
@@ -30,6 +32,14 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+}
+
+type Chirp struct {
+	ID uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body string `json:"body"`
+	UserID uuid.UUID `json:"user_id"`
 }
 
 func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -65,15 +75,25 @@ func (c *apiConfig) resetHandle(w http.ResponseWriter, r *http.Request) {
 func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 	type reqBody struct {
 		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 	w.Header().Set("Content-Type", "application/json")
 
 	req := reqBody{}
 	unmarshalJson(r.Body, &req, w)
 
-	user, err := c.db.CreateUser(r.Context(), req.Email)
+	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		fmt.Printf("Error creating user: %v", err)
+		fmt.Println(err)
+		return
+	}
+
+	user, err := c.db.CreateUser(r.Context(), database.CreateUserParams{
+		Email: req.Email,
+		HashedPassword: hash,
+	})
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error creating user: %v", err))
 		return
 	}
 
@@ -86,37 +106,123 @@ func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 	respondWithSuccess(w, 201, res)
 }
 
-func (c *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
-	type parameters struct {
-		Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
-	}
-	type successReturn struct {
-		Body string `json:"cleaned_body"`
+func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
+	type reqBody struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
 	}
 	w.Header().Set("Content-Type", "application/json")
 
-	decoder := json.NewDecoder(r.Body)
-	params := parameters{}
-	err := decoder.Decode(&params)
+	req := reqBody{}
+	unmarshalJson(r.Body, &req, w)
+
+	user, err := c.db.GetUser(r.Context(), req.Email)
 	if err != nil {
-		respondWithError(w, 400, fmt.Sprintf("Error unmarshaling data: %v", err))
+		respondWithError(w, 401, "Incorrect email or password")
 		return
 	}
+
+	match, err := auth.CheckPasswordHash(req.Password, user.HashedPassword)
+	if err != nil { // unexpected err in checking
+		fmt.Println(err)
+		return
+	}
+	if !match {
+		respondWithError(w, 401, "Incorrect email or password")
+		return
+	}
+
+	res := User {
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+	respondWithSuccess(w, 200, res)
+}
+
+func (c *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
+	type reqBody struct {
+		Body string `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	w.Header().Set("Content-Type", "application/json")
+
+	req := reqBody{}
+	unmarshalJson(r.Body, &req, w)
 	
-	if len(params.Body) > 140 {
+	// check len
+	if len(req.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long. Max len is 140 chars.")
 		return
 	}
 
-	c.db.CreateChirp(r.Context(), database.CreateChirpParams{
-		Body: params.Body,
-		UserID: params.UserID,
+	chirp, err := c.db.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body: req.Body,
+		UserID: req.UserID,
 	})
-	ret := successReturn {
-		Body: replaceProfanity(params.Body),
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error creating chirp in db: %v", err))
+		return
 	}
-	respondWithSuccess(w, 200, ret)
+
+	res := Chirp {
+		ID: chirp.ID,
+		Body: replaceProfanity(chirp.Body),
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		UserID: chirp.UserID,
+	}
+	respondWithSuccess(w, 201, res)
+}
+
+func (c *apiConfig) getAllChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	chirps, err := c.db.GetAllChirps(r.Context())
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error getting all chirps from db: %v", err))
+		return
+	}
+
+	var res []Chirp
+	for _, chirp := range chirps {
+		val := Chirp {
+			ID: chirp.ID,
+			Body: replaceProfanity(chirp.Body),
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			UserID: chirp.UserID,
+		}
+		res = append(res, val)
+	}
+
+	respondWithSuccess(w, 200, res)
+}
+
+func (c *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	id, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, 400, fmt.Sprintf("error parsing chirp id: %v", err))
+		return
+	}
+
+	chirp, err := c.db.GetChirp(r.Context(), id)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("error getting chirp from db: %v", err))
+		return
+	}
+
+	res := Chirp {
+		ID: chirp.ID,
+		Body: replaceProfanity(chirp.Body),
+		CreatedAt: chirp.CreatedAt,
+		UpdatedAt: chirp.UpdatedAt,
+		UserID: chirp.UserID,
+	}
+	respondWithSuccess(w, 200, res)
 }
 
 // main
@@ -145,7 +251,10 @@ func main() {
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.getHitsHandle)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetHandle)
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUserHandle)
-	serveMux.HandleFunc("/api/chirps", apiCfg.createChirpHandler)
+	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
+	serveMux.HandleFunc("GET /api/chirps", apiCfg.getAllChirpsHandler)
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
+	serveMux.HandleFunc("POST /api/login", apiCfg.loginHandle)
 
 	// most values are optional or I'm leaving them as zero values
 	server := &http.Server{

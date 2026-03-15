@@ -10,24 +10,31 @@ import (
 )
 
 const createUser = `-- name: CreateUser :one
-insert into users (id, created_at, updated_at, email)
+insert into users (id, created_at, updated_at, email, hashed_password)
 values (
     gen_random_uuid(),
     now(),
     now(),
-    $1
+    $1,
+    $2
 )
-returning id, created_at, updated_at, email
+returning id, created_at, updated_at, email, hashed_password
 `
 
-func (q *Queries) CreateUser(ctx context.Context, email string) (User, error) {
-	row := q.db.QueryRowContext(ctx, createUser, email)
+type CreateUserParams struct {
+	Email          string
+	HashedPassword string
+}
+
+func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, createUser, arg.Email, arg.HashedPassword)
 	var i User
 	err := row.Scan(
 		&i.ID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.HashedPassword,
 	)
 	return i, err
 }
@@ -39,4 +46,22 @@ delete from users
 func (q *Queries) DeleteAllUsers(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, deleteAllUsers)
 	return err
+}
+
+const getUser = `-- name: GetUser :one
+select id, created_at, updated_at, email, hashed_password from users
+where email = $1
+`
+
+func (q *Queries) GetUser(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUser, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.HashedPassword,
+	)
+	return i, err
 }
