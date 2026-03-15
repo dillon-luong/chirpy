@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"crypto/rand"
+	"encoding/hex"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -21,13 +23,17 @@ func MakeJWT(userID uuid.UUID, tokenSecret string, expiresIn time.Duration) (str
 
 	jwt, err := token.SignedString([]byte(tokenSecret))
 	if err != nil {
-		return "", fmt.Errorf("Error signing JWT: %v", err)
+		return "", err
 	}
 
 	return jwt, nil
 }
 
 func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
+	// checks if og signature in tokenString matches generated signature from payload
+	// can fail if:
+	// payload was changed but sig wasn't, so recreated sig will be diff
+	// payload and sig was changed, but since they dont have secret they cant recreate the proper sig
 	token, err := jwt.ParseWithClaims(tokenString, &jwt.RegisteredClaims{}, func(token *jwt.Token) (any, error) {
 		return 	[]byte(tokenSecret), nil
 	})
@@ -47,7 +53,7 @@ func ValidateJWT(tokenString, tokenSecret string) (uuid.UUID, error) {
 	}
 	
 	if id, err := uuid.Parse(stringID); err != nil {
-		return uuid.Nil, fmt.Errorf("error parsing uuid: %v", err)
+		return uuid.Nil, err
 	} else {
 		return id, nil
 	}
@@ -63,4 +69,11 @@ func GetBearerToken(headers http.Header) (string, error) {
 	}
 
 	return token, nil
+}
+
+func MakeRefreshToken() string {
+	key := make([]byte, 32)
+	rand.Read(key)
+
+	return hex.EncodeToString(key)
 }

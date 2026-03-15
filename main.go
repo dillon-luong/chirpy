@@ -12,12 +12,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/dillon-luong/chirpy/internal/database"
 	"github.com/dillon-luong/chirpy/internal/auth"
+	"github.com/dillon-luong/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
+
+var accessTokenExpireTime = 1 * time.Hour
 
 // struct + struct funcs
 type apiConfig struct {
@@ -32,6 +34,8 @@ type User struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 	Email     string    `json:"email"`
+	Token string `json:"token"`
+	RefreshToken string `json:"refresh_token"`
 }
 
 type Chirp struct {
@@ -116,19 +120,39 @@ func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
 	req := reqBody{}
 	unmarshalJson(r.Body, &req, w)
 
+	// check login creds
 	user, err := c.db.GetUser(r.Context(), req.Email)
 	if err != nil {
-		respondWithError(w, 401, "Incorrect email or password")
+		respondWithError(w, 401, "Incorrect email or password") // incorrect email
 		return
 	}
 
 	match, err := auth.CheckPasswordHash(req.Password, user.HashedPassword)
 	if err != nil { // unexpected err in checking
-		fmt.Println(err)
+		fmt.Printf("unexpected err checking password: %v", err)
 		return
 	}
 	if !match {
-		respondWithError(w, 401, "Incorrect email or password")
+		respondWithError(w, 401, "Incorrect email or password") // incorrect password
+		return
+	}
+
+	// create auth token (access token/api key)
+	token, err := auth.MakeJWT(user.ID, c.jwtSecret, accessTokenExpireTime)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error creating session token: %v", err))
+		return
+	}
+
+	// create refresh token
+	refreshExpireTime := time.Now().Add(60 * (24 * time.Hour))
+	refreshToken, err := c.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
+		Token: auth.MakeRefreshToken(),
+		UserID: user.ID,
+		ExpiresAt: refreshExpireTime,
+	})
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("unexpected error creating refresh token in db: %v", err))
 		return
 	}
 
@@ -137,14 +161,28 @@ func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		Token: token,
+		RefreshToken: refreshToken.Token,
 	}
 	respondWithSuccess(w, 200, res)
 }
 
 func (c *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
+	// check auth token and get user id (from claims)
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "no auth token")
+		return
+	}
+	id, err := auth.ValidateJWT(token, c.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, "invalid token")
+		return
+	}
+
 	type reqBody struct {
 		Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
+		// UserID uuid.UUID `json:"user_id"`
 	}
 	w.Header().Set("Content-Type", "application/json")
 
@@ -159,7 +197,7 @@ func (c *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 
 	chirp, err := c.db.CreateChirp(r.Context(), database.CreateChirpParams{
 		Body: req.Body,
-		UserID: req.UserID,
+		UserID: id,
 	})
 	if err != nil {
 		respondWithError(w, 500, fmt.Sprintf("error creating chirp in db: %v", err))
@@ -225,6 +263,60 @@ func (c *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithSuccess(w, 200, res)
 }
 
+func (c *apiConfig) refreshAccessHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 400, fmt.Sprintf("error retrieving bearer token: %v", err))
+		return
+	}
+
+	tokenEntry, err := c.db.GetRefreshToken(r.Context(), refreshToken)
+	// check if token is valid
+	if err != nil {
+		// could be doesn't exist
+		respondWithError(w, 500, fmt.Sprintf("error retrieving token from db: %v", err))
+		return
+	}
+	if time.Now().After(tokenEntry.ExpiresAt) {
+		respondWithError(w, 401, "expired refresh token")
+		return
+	}
+	if tokenEntry.Revoked.Valid {
+		respondWithError(w, 401, "revoked refresh token")
+		return
+	}
+
+	token, err := auth.MakeJWT(tokenEntry.UserID, c.jwtSecret, accessTokenExpireTime)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("unexpected error creating access token: %v", err))
+		return
+	}
+
+	respondWithSuccess(w, 200, struct {
+		Token string `json:"token"`
+	}{
+		Token: token,
+	})
+}
+
+func (c *apiConfig) revokeRefreshTokenHandler(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 400, fmt.Sprintf("error retrieving bearer token: %v", err))
+		return
+	}
+
+	err = c.db.RevokeRefreshToken(r.Context(), refreshToken)
+	if err != nil {
+		respondWithError(w, 400, fmt.Sprintf("error revoking refresh token: %v", err))
+		return
+	}
+
+	respondWithSuccess(w, 204, nil)
+}
+
 // main
 
 func main() {
@@ -241,6 +333,7 @@ func main() {
 	apiCfg := apiConfig{}
 	apiCfg.db = dbQueries
 	apiCfg.platform = os.Getenv("PLATFORM")
+	apiCfg.jwtSecret = os.Getenv("JWT_SECRET")
 	
 	serveMux := http.NewServeMux() // http request multiplexer
 	// added handler for "/" request which just gives filesystem contents at "." dir
@@ -255,6 +348,8 @@ func main() {
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getAllChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
 	serveMux.HandleFunc("POST /api/login", apiCfg.loginHandle)
+	serveMux.HandleFunc("POST /api/refresh", apiCfg.refreshAccessHandler)
+	serveMux.HandleFunc("POST /api/revoke", apiCfg.revokeRefreshTokenHandler)
 
 	// most values are optional or I'm leaving them as zero values
 	server := &http.Server{
@@ -303,19 +398,11 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	type errorReturn struct {
 		Error string `json:"error"`
 	}
-
-	w.WriteHeader(code)
 	ret := errorReturn {
 		Error: msg,
 	}
 
-	dat, err := json.Marshal(ret)
-	if err != nil {
-		fmt.Printf("error marshalling: %v", err)
-		w.WriteHeader(500)
-		return
-	}
-	w.Write(dat)
+	respondWithSuccess(w, code, ret)
 }
 
 func respondWithSuccess(w http.ResponseWriter, code int, payload interface{}) {
@@ -326,5 +413,11 @@ func respondWithSuccess(w http.ResponseWriter, code int, payload interface{}) {
 		w.WriteHeader(500)
 		return
 	}
-	w.Write(dat)
+
+	_, err = w.Write(dat)
+	if err != nil {
+		fmt.Printf("error writing payload: %v", err)
+		w.WriteHeader(500)
+		return
+	}
 }
