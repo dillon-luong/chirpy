@@ -88,7 +88,7 @@ func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 
 	hash, err := auth.HashPassword(req.Password)
 	if err != nil {
-		fmt.Println(err)
+		respondWithError(w, 500, fmt.Sprintf("unexpected error hashing password: %v", err))
 		return
 	}
 
@@ -108,6 +108,52 @@ func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 	}
 	respondWithSuccess(w, 201, res)
+}
+
+func (c *apiConfig) updateUserHandle(w http.ResponseWriter, r *http.Request) {
+	// check auth token and get user id (from claims)
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "no auth token")
+		return
+	}
+	id, err := auth.ValidateJWT(token, c.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, "invalid token")
+		return
+	}
+
+	type reqBody struct {
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+	
+	req := reqBody{}
+	unmarshalJson(r.Body, &req, w)
+
+	hash, err := auth.HashPassword(req.Password)
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("unexpected error hashing password: %v", err))
+		return
+	}
+
+	user, err := c.db.UpdateUser(r.Context(), database.UpdateUserParams{
+		ID: id,
+		Email: req.Email,
+		HashedPassword: hash,
+	})
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("Error creating user: %v", err))
+		return
+	}
+
+	res := User {
+		ID: user.ID,
+		CreatedAt: user.CreatedAt,
+		UpdatedAt: user.UpdatedAt,
+		Email: user.Email,
+	}
+	respondWithSuccess(w, 200, res)
 }
 
 func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
@@ -344,6 +390,7 @@ func main() {
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.getHitsHandle)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetHandle)
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUserHandle)
+	serveMux.HandleFunc("PUT /api/users", apiCfg.updateUserHandle)
 	serveMux.HandleFunc("POST /api/chirps", apiCfg.createChirpHandler)
 	serveMux.HandleFunc("GET /api/chirps", apiCfg.getAllChirpsHandler)
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.getChirpHandler)
