@@ -36,6 +36,7 @@ type User struct {
 	Email     string    `json:"email"`
 	Token string `json:"token"`
 	RefreshToken string `json:"refresh_token"`
+	IsChirpyRed bool `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
@@ -106,6 +107,7 @@ func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
 		Email: user.Email,
+		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	respondWithSuccess(w, 201, res)
 }
@@ -209,6 +211,7 @@ func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
 		Email: user.Email,
 		Token: token,
 		RefreshToken: refreshToken.Token,
+		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	respondWithSuccess(w, 200, res)
 }
@@ -363,6 +366,85 @@ func (c *apiConfig) revokeRefreshTokenHandler(w http.ResponseWriter, r *http.Req
 	respondWithSuccess(w, 204, nil)
 }
 
+func (c *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
+	// check auth token and get user id (from claims)
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(w, 401, "no auth token")
+		return
+	}
+	id, err := auth.ValidateJWT(token, c.jwtSecret)
+	if err != nil {
+		respondWithError(w, 401, "invalid token")
+		return
+	}
+
+	// get path var
+	chirpId, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, 400, fmt.Sprintf("missing chirp id in path: %v", err))
+		return
+	}
+
+	// check if user owns chirp
+	count, err := c.db.CountUserChirps(r.Context(), database.CountUserChirpsParams{
+		ID: chirpId,
+		UserID: id,
+	})
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error counting chirps user owns: %v", err))
+		return
+	}
+	if count == 0 {
+		respondWithError(w, 403, "no chirps associated with user")
+		return
+	}
+
+	// delete chirp
+	err = c.db.DeleteChirp(r.Context(), database.DeleteChirpParams{
+		ID: chirpId,
+		UserID: id,
+	})
+	if err != nil {
+		respondWithError(w, 500, fmt.Sprintf("error deleting chirp: %v", err))
+		return
+	}
+
+	respondWithSuccess(w, 204, nil)
+}
+
+func (c *apiConfig) polkaChirpyRedHandler(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Event string `json:"event"`
+		Data struct {
+			User_ID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	req := request{}
+	unmarshalJson(r.Body, &req, w)
+
+	event := req.Event
+	if event != "user.upgraded" {
+		respondWithSuccess(w, 204, nil)
+		return
+	}
+
+	id, err := uuid.Parse(req.Data.User_ID)
+	if err != nil {
+		respondWithError(w, 400, fmt.Sprintf("error parsing user id: %v", err))
+		return
+	}
+
+	_, err = c.db.UpgradeToChirpyRedUser(r.Context(), id)
+	if err != nil {
+		respondWithError(w, 404, fmt.Sprintf("user could not be found: %v", err))
+		return
+	}
+
+	respondWithSuccess(w, 204, nil)
+}
+
 // main
 
 func main() {
@@ -397,6 +479,8 @@ func main() {
 	serveMux.HandleFunc("POST /api/login", apiCfg.loginHandle)
 	serveMux.HandleFunc("POST /api/refresh", apiCfg.refreshAccessHandler)
 	serveMux.HandleFunc("POST /api/revoke", apiCfg.revokeRefreshTokenHandler)
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.deleteChirpHandler)
+	serveMux.HandleFunc("POST /api/polka/webhooks", apiCfg.polkaChirpyRedHandler)
 
 	// most values are optional or I'm leaving them as zero values
 	server := &http.Server{
@@ -453,7 +537,9 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 }
 
 func respondWithSuccess(w http.ResponseWriter, code int, payload interface{}) {
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
+
 	dat, err := json.Marshal(payload)
 	if err != nil {
 		fmt.Printf("error marhsalling: %v", err)
@@ -461,10 +547,10 @@ func respondWithSuccess(w http.ResponseWriter, code int, payload interface{}) {
 		return
 	}
 
-	_, err = w.Write(dat)
-	if err != nil {
-		fmt.Printf("error writing payload: %v", err)
-		w.WriteHeader(500)
-		return
+	if code != 204 {
+		_, err = w.Write(dat)
+		if err != nil {
+			fmt.Printf("error writing payload: %v", err)
+		}
 	}
 }

@@ -16,3 +16,11 @@ order by created_at asc;
 -- name: GetChirp :one
 select * from chirps
 where id=$1;
+
+-- name: DeleteChirp :exec
+delete from chirps
+where id = $1 and user_id = $2;
+
+-- name: CountUserChirps :one
+select count(*) from chirps
+where id = $1 and user_id = $2;

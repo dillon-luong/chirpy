@@ -9,4 +9,4 @@ create table refresh_tokens(
 );
 
 -- +goose Down
-drop table create table refresh_tokens;
+drop table refresh_tokens;

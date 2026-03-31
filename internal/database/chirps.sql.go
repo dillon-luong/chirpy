@@ -11,6 +11,23 @@ import (
 	"github.com/google/uuid"
 )
 
+const countUserChirps = `-- name: CountUserChirps :one
+select count(*) from chirps
+where id = $1 and user_id = $2
+`
+
+type CountUserChirpsParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) CountUserChirps(ctx context.Context, arg CountUserChirpsParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countUserChirps, arg.ID, arg.UserID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createChirp = `-- name: CreateChirp :one
 insert into chirps (id, created_at, updated_at, body, user_id)
 values (
@@ -39,6 +56,21 @@ func (q *Queries) CreateChirp(ctx context.Context, arg CreateChirpParams) (Chirp
 		&i.UserID,
 	)
 	return i, err
+}
+
+const deleteChirp = `-- name: DeleteChirp :exec
+delete from chirps
+where id = $1 and user_id = $2
+`
+
+type DeleteChirpParams struct {
+	ID     uuid.UUID
+	UserID uuid.UUID
+}
+
+func (q *Queries) DeleteChirp(ctx context.Context, arg DeleteChirpParams) error {
+	_, err := q.db.ExecContext(ctx, deleteChirp, arg.ID, arg.UserID)
+	return err
 }
 
 const getAllChirps = `-- name: GetAllChirps :many
