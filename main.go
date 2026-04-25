@@ -24,31 +24,32 @@ var accessTokenExpireTime = 1 * time.Hour
 // struct + struct funcs
 type apiConfig struct {
 	fileserverHits atomic.Int32
-	db *database.Queries
-	platform string
-	jwtSecret string
+	db             *database.Queries
+	platform       string
+	jwtSecret      string
+	polkaKey       string
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
-	Token string `json:"token"`
-	RefreshToken string `json:"refresh_token"`
-	IsChirpyRed bool `json:"is_chirpy_red"`
+	ID           uuid.UUID `json:"id"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+	Email        string    `json:"email"`
+	Token        string    `json:"token"`
+	RefreshToken string    `json:"refresh_token"`
+	IsChirpyRed  bool      `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
-	ID uuid.UUID `json:"id"`
+	ID        uuid.UUID `json:"id"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
-	Body string `json:"body"`
-	UserID uuid.UUID `json:"user_id"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
 }
 
 func (c *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
-	return http.HandlerFunc(func (w http.ResponseWriter, r *http.Request) {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.fileserverHits.Add(1)
 		next.ServeHTTP(w, r)
 	})
@@ -79,7 +80,7 @@ func (c *apiConfig) resetHandle(w http.ResponseWriter, r *http.Request) {
 
 func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 	type reqBody struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -94,7 +95,7 @@ func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := c.db.CreateUser(r.Context(), database.CreateUserParams{
-		Email: req.Email,
+		Email:          req.Email,
 		HashedPassword: hash,
 	})
 	if err != nil {
@@ -102,11 +103,11 @@ func (c *apiConfig) createUserHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := User {
-		ID: user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email: user.Email,
+	res := User{
+		ID:          user.ID,
+		CreatedAt:   user.CreatedAt,
+		UpdatedAt:   user.UpdatedAt,
+		Email:       user.Email,
 		IsChirpyRed: user.IsChirpyRed.Bool,
 	}
 	respondWithSuccess(w, 201, res)
@@ -126,10 +127,10 @@ func (c *apiConfig) updateUserHandle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type reqBody struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
-	
+
 	req := reqBody{}
 	unmarshalJson(r.Body, &req, w)
 
@@ -140,8 +141,8 @@ func (c *apiConfig) updateUserHandle(w http.ResponseWriter, r *http.Request) {
 	}
 
 	user, err := c.db.UpdateUser(r.Context(), database.UpdateUserParams{
-		ID: id,
-		Email: req.Email,
+		ID:             id,
+		Email:          req.Email,
 		HashedPassword: hash,
 	})
 	if err != nil {
@@ -149,18 +150,18 @@ func (c *apiConfig) updateUserHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := User {
-		ID: user.ID,
+	res := User{
+		ID:        user.ID,
 		CreatedAt: user.CreatedAt,
 		UpdatedAt: user.UpdatedAt,
-		Email: user.Email,
+		Email:     user.Email,
 	}
 	respondWithSuccess(w, 200, res)
 }
 
 func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
 	type reqBody struct {
-		Email string `json:"email"`
+		Email    string `json:"email"`
 		Password string `json:"password"`
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -195,8 +196,8 @@ func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
 	// create refresh token
 	refreshExpireTime := time.Now().Add(60 * (24 * time.Hour))
 	refreshToken, err := c.db.CreateRefreshToken(r.Context(), database.CreateRefreshTokenParams{
-		Token: auth.MakeRefreshToken(),
-		UserID: user.ID,
+		Token:     auth.MakeRefreshToken(),
+		UserID:    user.ID,
 		ExpiresAt: refreshExpireTime,
 	})
 	if err != nil {
@@ -204,14 +205,14 @@ func (c *apiConfig) loginHandle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := User {
-		ID: user.ID,
-		CreatedAt: user.CreatedAt,
-		UpdatedAt: user.UpdatedAt,
-		Email: user.Email,
-		Token: token,
+	res := User{
+		ID:           user.ID,
+		CreatedAt:    user.CreatedAt,
+		UpdatedAt:    user.UpdatedAt,
+		Email:        user.Email,
+		Token:        token,
 		RefreshToken: refreshToken.Token,
-		IsChirpyRed: user.IsChirpyRed.Bool,
+		IsChirpyRed:  user.IsChirpyRed.Bool,
 	}
 	respondWithSuccess(w, 200, res)
 }
@@ -237,7 +238,7 @@ func (c *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 
 	req := reqBody{}
 	unmarshalJson(r.Body, &req, w)
-	
+
 	// check len
 	if len(req.Body) > 140 {
 		respondWithError(w, 400, "Chirp is too long. Max len is 140 chars.")
@@ -245,7 +246,7 @@ func (c *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	chirp, err := c.db.CreateChirp(r.Context(), database.CreateChirpParams{
-		Body: req.Body,
+		Body:   req.Body,
 		UserID: id,
 	})
 	if err != nil {
@@ -253,36 +254,62 @@ func (c *apiConfig) createChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := Chirp {
-		ID: chirp.ID,
-		Body: replaceProfanity(chirp.Body),
+	res := Chirp{
+		ID:        chirp.ID,
+		Body:      replaceProfanity(chirp.Body),
 		CreatedAt: chirp.CreatedAt,
 		UpdatedAt: chirp.UpdatedAt,
-		UserID: chirp.UserID,
+		UserID:    chirp.UserID,
 	}
 	respondWithSuccess(w, 201, res)
 }
 
 func (c *apiConfig) getAllChirpsHandler(w http.ResponseWriter, r *http.Request) {
+	query := r.URL.Query().Get("author_id")
 	w.Header().Set("Content-Type", "application/json")
 
-	chirps, err := c.db.GetAllChirps(r.Context())
-	if err != nil {
-		respondWithError(w, 500, fmt.Sprintf("error getting all chirps from db: %v", err))
-		return
+	var chirps []database.Chirp
+	var err error
+	if query != "" {
+		id, err := uuid.Parse(query)
+		if err != nil {
+			respondWithError(w, 400, fmt.Sprintf("error parsing chirp id: %v", err))
+			return
+		}
+
+		chirps, err = c.db.GetAllChirpsAuthorId(r.Context(), id)
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("error getting all chirps from db: %v", err))
+			return
+		}
+	} else {
+		chirps, err = c.db.GetAllChirps(r.Context())
+		if err != nil {
+			respondWithError(w, 500, fmt.Sprintf("error getting all chirps from db: %v", err))
+			return
+		}
 	}
 
 	var res []Chirp
 	for _, chirp := range chirps {
-		val := Chirp {
-			ID: chirp.ID,
-			Body: replaceProfanity(chirp.Body),
+		val := Chirp{
+			ID:        chirp.ID,
+			Body:      replaceProfanity(chirp.Body),
 			CreatedAt: chirp.CreatedAt,
 			UpdatedAt: chirp.UpdatedAt,
-			UserID: chirp.UserID,
+			UserID:    chirp.UserID,
 		}
 		res = append(res, val)
 	}
+
+	sort := r.URL.Query().Get("sort")
+	slices.SortFunc(res, func(a, b Chirp) int {
+		comp := a.CreatedAt.Compare(b.CreatedAt)
+		if sort == "desc" {
+			return -1 * comp
+		}
+		return comp
+	})
 
 	respondWithSuccess(w, 200, res)
 }
@@ -302,12 +329,12 @@ func (c *apiConfig) getChirpHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	res := Chirp {
-		ID: chirp.ID,
-		Body: replaceProfanity(chirp.Body),
+	res := Chirp{
+		ID:        chirp.ID,
+		Body:      replaceProfanity(chirp.Body),
 		CreatedAt: chirp.CreatedAt,
 		UpdatedAt: chirp.UpdatedAt,
-		UserID: chirp.UserID,
+		UserID:    chirp.UserID,
 	}
 	respondWithSuccess(w, 200, res)
 }
@@ -388,7 +415,7 @@ func (c *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
 
 	// check if user owns chirp
 	count, err := c.db.CountUserChirps(r.Context(), database.CountUserChirpsParams{
-		ID: chirpId,
+		ID:     chirpId,
 		UserID: id,
 	})
 	if err != nil {
@@ -402,7 +429,7 @@ func (c *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
 
 	// delete chirp
 	err = c.db.DeleteChirp(r.Context(), database.DeleteChirpParams{
-		ID: chirpId,
+		ID:     chirpId,
 		UserID: id,
 	})
 	if err != nil {
@@ -414,9 +441,18 @@ func (c *apiConfig) deleteChirpHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *apiConfig) polkaChirpyRedHandler(w http.ResponseWriter, r *http.Request) {
+	auth, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		http.Error(w, err.Error(), 401)
+		return
+	}
+	if auth != c.polkaKey {
+		http.Error(w, "non matching api key", 401)
+		return
+	}
 	type request struct {
 		Event string `json:"event"`
-		Data struct {
+		Data  struct {
 			User_ID string `json:"user_id"`
 		} `json:"data"`
 	}
@@ -462,13 +498,14 @@ func main() {
 	apiCfg.db = dbQueries
 	apiCfg.platform = os.Getenv("PLATFORM")
 	apiCfg.jwtSecret = os.Getenv("JWT_SECRET")
-	
+	apiCfg.polkaKey = os.Getenv("POLKA_KEY")
+
 	serveMux := http.NewServeMux() // http request multiplexer
 	// added handler for "/" request which just gives filesystem contents at "." dir
 	// assuming any requests involving "/" will build off of it as if "/" = "."
 	// if file not specified (url ending in library), will auto pick index.html
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app", http.FileServer(http.Dir(".")))))
-	serveMux.HandleFunc("GET /api/healthz", readyHandle);
+	serveMux.HandleFunc("GET /api/healthz", readyHandle)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.getHitsHandle)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.resetHandle)
 	serveMux.HandleFunc("POST /api/users", apiCfg.createUserHandle)
@@ -484,7 +521,7 @@ func main() {
 
 	// most values are optional or I'm leaving them as zero values
 	server := &http.Server{
-		Addr: ":8080",
+		Addr:    ":8080",
 		Handler: serveMux,
 	}
 
@@ -529,7 +566,7 @@ func respondWithError(w http.ResponseWriter, code int, msg string) {
 	type errorReturn struct {
 		Error string `json:"error"`
 	}
-	ret := errorReturn {
+	ret := errorReturn{
 		Error: msg,
 	}
 
